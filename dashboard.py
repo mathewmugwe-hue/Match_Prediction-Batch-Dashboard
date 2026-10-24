@@ -176,6 +176,18 @@ if run:
             st.error("The required MCMC team ratings are missing. The deployment build must run src/mcmc_model.py with the repository's original defaults.")
             st.stop()
 
+        # Validate against the original historical national-team dataset before calling
+        # the upstream predictor. Its own fallbacks can otherwise emit numbers for an
+        # unknown club side, which would look like a real model prediction.
+        history = pd.read_parquet(
+            ROOT / "data" / "processed" / "results_clean.parquet",
+            columns=["home_team", "away_team"],
+        )
+        known_teams = set(history["home_team"].dropna().astype(str)) | set(
+            history["away_team"].dropna().astype(str)
+        )
+        team_lookup = {team.casefold(): team for team in known_teams}
+
         parsed: list[dict[str, Any]] = []
         for index, line in enumerate(lines, start=1):
             try:
@@ -208,11 +220,32 @@ if run:
             if fixture.get("Parse error"):
                 output.append({**base, "Status": "INPUT ERROR", "Error": fixture["Parse error"]})
             else:
+                unknown_teams = [
+                    team for team in (fixture["Home team"], fixture["Away team"])
+                    if team.casefold() not in team_lookup
+                ]
+                if unknown_teams:
+                    output.append({
+                        **base,
+                        "Status": "UNSUPPORTED TEAM",
+                        "Error": (
+                            "Not found in the original international-team dataset: "
+                            + ", ".join(unknown_teams)
+                            + ". This model does not predict club teams. Use the current national-team names from the source dataset."
+                        ),
+                    })
+                    progress.progress(row_num / len(parsed), text=f"Processed {row_num} of {len(parsed)} fixtures")
+                    continue
+
+                model_home = team_lookup[fixture["Home team"].casefold()]
+                model_away = team_lookup[fixture["Away team"].casefold()]
+                base["Home team"] = model_home
+                base["Away team"] = model_away
                 try:
                     # Deliberately call the upstream predictor unchanged.
                     prediction = predict_match(
-                        fixture["Home team"],
-                        fixture["Away team"],
+                        model_home,
+                        model_away,
                         fixture["Tournament"],
                         fixture["Neutral venue"],
                     )
