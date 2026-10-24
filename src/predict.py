@@ -6,6 +6,7 @@ Usage:
     python src/predict.py "France" "England" --tournament "FIFA World Cup"
 """
 import argparse
+from functools import lru_cache
 from pathlib import Path
 
 import joblib
@@ -171,13 +172,23 @@ def build_feature_row(
     return pd.DataFrame([row])
 
 
-def predict_match(home_team: str, away_team: str, tournament: str = "Friendly", neutral: bool = False):
+@lru_cache(maxsize=1)
+def load_prediction_context():
+    """Load original inference inputs once for a whole batch.
+
+    This is an execution-only optimization. It retains the original data,
+    feature construction, trained estimators, encoders and parameter settings.
+    """
     results = pd.read_parquet(PROCESSED_DIR / "results_clean.parquet")
     ratings = pd.read_parquet(PROCESSED_DIR / "mcmc_ratings.parquet")
     elo = latest_elo(results)
     online = latest_online_rating(results)
-
     calibrated_clf, reg_home, reg_away, encoders = load_models()
+    return results, ratings, elo, online, calibrated_clf, reg_home, reg_away, encoders
+
+
+def predict_match(home_team: str, away_team: str, tournament: str = "Friendly", neutral: bool = False):
+    results, ratings, elo, online, calibrated_clf, reg_home, reg_away, encoders = load_prediction_context()
     result_encoder = encoders["result_encoder"]
     tier_encoder = encoders["categorical_encoders"]["tournament_tier"]
 
