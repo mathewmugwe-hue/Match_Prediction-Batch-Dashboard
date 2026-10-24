@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: match-prediction-batch-dashboard
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements-dashboard.txt && python src/data_cleaning.py && python src/mcmc_model.py && rm -f models/mcmc_idata.nc
+    startCommand: streamlit run dashboard.py --server.port $PORT --server.address 0.0.0.0
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10

@@ -1,0 +1,3 @@
+# The upstream model's pinned requirements remain unchanged.
+-r requirements.txt
+streamlit>=1.49,<2
