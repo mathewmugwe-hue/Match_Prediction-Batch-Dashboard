@@ -88,9 +88,11 @@ st.markdown(
     - FIFA World Cup, France, England
     - 2026-11-12, FIFA World Cup qualification, Argentina, Brazil
     - 2026-11-12, FIFA World Cup, Argentina, Brazil, neutral
+    - Argentina vs Brazil, 2.10, 3.20, 3.60
+    - FIFA World Cup, Argentina, Brazil, 2.10, 3.20, 3.60
+    - 2026-11-12, FIFA World Cup, Argentina, Brazil, 2.10, 3.20, 3.60
 
-    For comma-separated formats, keep the order date (optional), tournament, home team, away team, neutral (optional).
-    The date is shown for reference only: the original predict_match function does not take fixture date as an argument.
+    Odds are optional decimal 1X2 odds in home/draw/away order. They are used only to show a normalized bookmaker baseline beside the original model, never as model inputs. For comma-separated formats, keep date (optional), tournament, home team, away team, then odds (optional); use "neutral" as the last field if needed. Fixture dates are displayed only: the original predictor does not take a target date.
     """
 )
 
@@ -122,23 +124,56 @@ def parse_fixture(line: str, index: int) -> dict[str, Any]:
         "Home team": "",
         "Away team": "",
         "Neutral venue": False,
+        "Home odds": None,
+        "Draw odds": None,
+        "Away odds": None,
     }
     pieces = [p.strip() for p in next(csv.reader([raw], skipinitialspace=True)) if p.strip()]
+
+    def set_odds(values: list[str]) -> bool:
+        if len(values) < 3:
+            return False
+        try:
+            odds = [float(values[0]), float(values[1]), float(values[2])]
+        except (TypeError, ValueError):
+            return False
+        if any(value <= 1.0 for value in odds):
+            return False
+        result["Home odds"], result["Draw odds"], result["Away odds"] = odds
+        return True
+
+    # Accept pipe-delimited "Home vs Away | home_odds | draw_odds | away_odds".
+    if "|" in raw:
+        segments = [part.strip() for part in raw.split("|")]
+        match = re.split(r"\s+(?:vs?\.?|v\.?|@)\s+", segments[0], maxsplit=1, flags=re.IGNORECASE)
+        if len(match) == 2 and len(segments) >= 4 and set_odds(segments[1:4]):
+            result["Home team"], result["Away team"] = match[0].strip(), match[1].strip()
+            return result
 
     if len(pieces) >= 4 and re.fullmatch(r"\d{4}-\d{2}-\d{2}", pieces[0]):
         result["Fixture date"] = pieces[0]
         result["Tournament"] = pieces[1]
         result["Home team"] = pieces[2]
         result["Away team"] = pieces[3]
-        if len(pieces) >= 5:
+        if len(pieces) >= 7 and set_odds(pieces[4:7]):
+            if len(pieces) >= 8:
+                result["Neutral venue"] = parse_neutral(pieces[7])
+        elif len(pieces) >= 5:
             result["Neutral venue"] = parse_neutral(pieces[4])
         return result
 
     if len(pieces) >= 3:
+        match = re.split(r"\s+(?:vs?\.?|v\.?|@)\s+", pieces[0], maxsplit=1, flags=re.IGNORECASE)
+        if len(match) == 2 and len(pieces) >= 4 and set_odds(pieces[1:4]):
+            result["Home team"], result["Away team"] = match[0].strip(), match[1].strip()
+            return result
         result["Tournament"] = pieces[0]
         result["Home team"] = pieces[1]
         result["Away team"] = pieces[2]
-        if len(pieces) >= 4:
+        if len(pieces) >= 6 and set_odds(pieces[3:6]):
+            if len(pieces) >= 7:
+                result["Neutral venue"] = parse_neutral(pieces[6])
+        elif len(pieces) >= 4:
             result["Neutral venue"] = parse_neutral(pieces[3])
         return result
 
@@ -153,9 +188,8 @@ def parse_fixture(line: str, index: int) -> dict[str, Any]:
 
     raise ValueError(
         "Use 'Home vs Away', 'Tournament, Home, Away' or "
-        "'YYYY-MM-DD, Tournament, Home, Away[, neutral]'."
+        "'YYYY-MM-DD, Tournament, Home, Away[, odds]'."
     )
-
 
 def outcome_label(probs: dict[str, float]) -> str:
     key = max(("p_home_win", "p_draw", "p_away_win"), key=lambda k: probs[k])
@@ -261,6 +295,9 @@ if run:
                 "Home team": fixture["Home team"],
                 "Away team": fixture["Away team"],
                 "Neutral venue": fixture["Neutral venue"],
+                "Home odds": fixture.get("Home odds"),
+                "Draw odds": fixture.get("Draw odds"),
+                "Away odds": fixture.get("Away odds"),
             }
             if fixture.get("Parse error"):
                 output.append({**base, "Status": "INPUT ERROR", "Error": fixture["Parse error"]})
@@ -297,7 +334,12 @@ if run:
                     p_home = prediction["p_home_win"]
                     p_draw = prediction["p_draw"]
                     p_away = prediction["p_away_win"]
-                    output.append({
+                    market_probs = None
+                    if all(pd.notna(fixture.get(key)) for key in ("Home odds", "Draw odds", "Away odds")):
+                        inverse = [1.0 / float(fixture[key]) for key in ("Home odds", "Draw odds", "Away odds")]
+                        total_inverse = sum(inverse)
+                        market_probs = [value / total_inverse for value in inverse]
+                    pred_row = {
                         **base,
                         "Prediction": outcome_label({
                             "p_home_win": p_home,
@@ -312,7 +354,20 @@ if run:
                         "Expected away goals": prediction["expected_away_goals"],
                         "Status": "OK",
                         "Error": "",
-                    })
+                    }
+                    if market_probs is not None:
+                        market = {
+                            "p_home_win": market_probs[0],
+                            "p_draw": market_probs[1],
+                            "p_away_win": market_probs[2],
+                        }
+                        pred_row.update({
+                            "Bookmaker baseline": outcome_label(market),
+                            "Bookmaker P(Home)": market_probs[0],
+                            "Bookmaker P(Draw)": market_probs[1],
+                            "Bookmaker P(Away)": market_probs[2],
+                        })
+                    output.append(pred_row)
                 except Exception as exc:
                     output.append({**base, "Status": "PREDICTION ERROR", "Error": f"{type(exc).__name__}: {exc}"})
             progress.progress(row_num / len(parsed), text=f"Processed {row_num} of {len(parsed)} fixtures")
@@ -329,7 +384,7 @@ if run:
         m2.metric("Predictions returned", ok)
         m3.metric("Rows with errors", errors)
         st.subheader("2. Predictions — original input order")
-        st.caption("Probabilities are produced by the repository's original predict_match() function. Bookmaker odds, if supplied separately, are not inputs to this model.")
+        st.caption("Model probabilities come from the original predict_match() function. Optional odds are shown only as a separate margin-normalized bookmaker baseline and never enter the model.")
         st.markdown("**Batch diagnostics**")
         status_counts = frame["Status"].value_counts(dropna=False)
         diag_cols = st.columns(max(1, min(4, len(status_counts))))
