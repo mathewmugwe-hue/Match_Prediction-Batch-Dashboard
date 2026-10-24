@@ -1,0 +1,26 @@
+name: Validate batch dashboard
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile dashboard and model Python files
+        run: python -m py_compile dashboard.py src/*.py
+      - name: Check required model artifacts and source data are tracked
+        run: |
+          test -f results.csv
+          test -f former_names.csv
+          test -f models/xgb_1x2_calibrated.joblib
+          test -f models/xgb_home_goals.json
+          test -f models/xgb_away_goals.json
+          test -f models/encoders.joblib
