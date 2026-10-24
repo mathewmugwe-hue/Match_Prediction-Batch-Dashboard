@@ -16,6 +16,8 @@ jobs:
           python-version: "3.12"
       - name: Compile dashboard and model Python files
         run: python -m py_compile dashboard.py src/*.py
+      - name: Run batch parser regression tests
+        run: python -m unittest discover -s tests -v
       - name: Check required model artifacts and source data are tracked
         run: |
           test -f results.csv
