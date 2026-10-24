@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import csv
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -164,17 +165,49 @@ def outcome_label(probs: dict[str, float]) -> str:
     }[key]
 
 
+def ensure_original_artifacts() -> None:
+    """Build only missing intermediate files with the upstream scripts and defaults."""
+    processed = ROOT / "data" / "processed"
+    results_path = processed / "results_clean.parquet"
+    ratings_path = processed / "mcmc_ratings.parquet"
+
+    if results_path.exists() and ratings_path.exists():
+        return
+
+    with st.status("Preparing the original model's required data (first run only)…", expanded=True) as status_box:
+        try:
+            if not results_path.exists():
+                st.write("Step 1/2 · Cleaning the repository's included international results dataset")
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / "src" / "data_cleaning.py")],
+                    cwd=ROOT, capture_output=True, text=True, timeout=600, check=False,
+                )
+                if result.returncode != 0:
+                    raise RuntimeError("data_cleaning.py failed:\\n" + (result.stderr or result.stdout)[-5000:])
+            if not ratings_path.exists():
+                st.write("Step 2/2 · Fitting the original Bayesian MCMC team ratings (600 draws, 600 tune, 4 chains)")
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / "src" / "mcmc_model.py")],
+                    cwd=ROOT, capture_output=True, text=True, timeout=2400, check=False,
+                )
+                if result.returncode != 0:
+                    raise RuntimeError("mcmc_model.py failed:\\n" + (result.stderr or result.stdout)[-7000:])
+            if not results_path.exists() or not ratings_path.exists():
+                raise RuntimeError("The original scripts finished without creating all required parquet files.")
+            status_box.update(label="Original model data is ready", state="complete", expanded=False)
+        except Exception as exc:
+            status_box.update(label="Could not prepare original model data", state="error", expanded=True)
+            st.error(str(exc))
+            st.info("No substitute model or guessed probabilities were used. If this hosting provider terminates the MCMC build for memory or time limits, deploy this same repository on a Python host with more memory; the model settings remain unchanged.")
+            st.stop()
+
+
 if run:
     lines = [line.strip() for line in fixture_text.splitlines() if line.strip()]
     if not lines:
         st.error("Paste at least one fixture before running predictions.")
     else:
-        if not (ROOT / "data" / "processed" / "results_clean.parquet").exists():
-            st.error("The required processed historical data is missing. The deployment build must run src/data_cleaning.py.")
-            st.stop()
-        if not (ROOT / "data" / "processed" / "mcmc_ratings.parquet").exists():
-            st.error("The required MCMC team ratings are missing. The deployment build must run src/mcmc_model.py with the repository's original defaults.")
-            st.stop()
+        ensure_original_artifacts()
 
         # Validate against the original historical national-team dataset before calling
         # the upstream predictor. Its own fallbacks can otherwise emit numbers for an
