@@ -74,7 +74,8 @@ with st.sidebar:
 st.markdown(
     '<div class="note"><b>Scope warning:</b> this repository models men\'s full international teams, '
     'not club teams. Use country-vs-country fixtures represented in its historical data. '
-    'Predictions are not generated from club data or live lineup feeds.</div>',
+    'Predictions are not generated from club data or live lineup feeds. '
+    'Bookmaker odds are not consumed by the original model and do not affect its probabilities.</div>',
     unsafe_allow_html=True,
 )
 
@@ -170,6 +171,17 @@ def ensure_original_artifacts() -> None:
     processed = ROOT / "data" / "processed"
     results_path = processed / "results_clean.parquet"
     ratings_path = processed / "mcmc_ratings.parquet"
+
+    required_models = [
+        ROOT / "models" / "xgb_1x2_calibrated.joblib",
+        ROOT / "models" / "xgb_home_goals.json",
+        ROOT / "models" / "xgb_away_goals.json",
+        ROOT / "models" / "encoders.joblib",
+    ]
+    missing_models = [str(path.relative_to(ROOT)) for path in required_models if not path.is_file()]
+    if missing_models:
+        st.error("Original model artifacts are missing: " + ", ".join(missing_models))
+        st.stop()
 
     if results_path.exists() and ratings_path.exists():
         return
@@ -317,7 +329,22 @@ if run:
         m2.metric("Predictions returned", ok)
         m3.metric("Rows with errors", errors)
         st.subheader("2. Predictions — original input order")
-        st.caption("Probabilities are the original model's outputs. Top outcome probability is the largest of the three class probabilities, not a guarantee of correctness.")
+        st.caption("Probabilities are produced by the repository's original predict_match() function. Bookmaker odds, if supplied separately, are not inputs to this model.")
+        st.markdown("**Batch diagnostics**")
+        status_counts = frame["Status"].value_counts(dropna=False)
+        diag_cols = st.columns(max(1, min(4, len(status_counts))))
+        for diag_col, (status_name, status_count) in zip(diag_cols, status_counts.items()):
+            diag_col.metric(str(status_name), int(status_count))
+        failed = frame[frame["Status"] != "OK"]
+        if not failed.empty:
+            with st.expander("Why rows failed", expanded=True):
+                reasons = (
+                    failed.assign(Error=failed["Error"].fillna("").astype(str))
+                    .groupby(["Status", "Error"], dropna=False)
+                    .size().reset_index(name="Rows")
+                    .sort_values("Rows", ascending=False)
+                )
+                st.dataframe(reasons, use_container_width=True, hide_index=True)
         display = frame.copy()
         for col in ("P(Home win)", "P(Draw)", "P(Away win)", "Top outcome probability"):
             if col in display:
